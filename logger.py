@@ -4,6 +4,7 @@
 from subprocess import check_output
 import re
 import _mysql
+import db
 
 class Logger:
     def __init__(self):
@@ -19,7 +20,7 @@ class Logger:
         output = check_output([self._sensors_bin]).decode("utf-8")
         
         try:
-            con = _mysql.connect('localhost', 'stat_user', 'stat42pass', 'server_stats')
+            con = _mysql.connect(db.server, db.name, db.password, db.dbname)
 
             for (name, sensor) in self._sensors.items():
                 m = re.search(sensor[1], output, re.M)
