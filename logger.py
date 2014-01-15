@@ -1,63 +1,73 @@
 #!/usr/bin/python2
-# Logs computer temperature and fan speed to database
+# Logs various stats from sensors to database
 # Intended to run via cron
 from subprocess import check_output
 import re
-import _mysql
+import MySQLdb
+import MySQLdb.cursors
 import db
 
 class Logger:
-    def __init__(self):
-        # TODO: save all this stuff to database
-        self._sensors = { 
-                'Processor': (1, r'temp1:\s+\+([0-9]+\.[0-9])'),
-                'Case': (2, r'M/B Temp:\s+\+([0-9]+\.[0-9])'),
-                'Fan': (3, r'fan1:\s+([0-9]+)')
-                }
-        self._sensors_bin = ["sensors"]
-        self._mem = {
-                'RAM': (5, r'Mem:\s+([0-9]+).+-/\+ buffers/cache:\s+([0-9]+)')
-                }
-        self._mem_bin = ["free"]
-
-        self._cpu = {
-                'CPU': (4, r'all\s+([0-9]+(?:\.|,)[0-9]+)')
-                }
-        self._cpu_bin = ["mpstat"]
-
-
     def log(self):
-        
         try:
-            con = _mysql.connect(db.server, db.name, db.password, db.dbname)
+            con = MySQLdb.connect(db.server, db.name, db.password, db.dbname,
+                    cursorclass=MySQLdb.cursors.DictCursor)
+            cursor = con.cursor()
 
-            # TODO: implement better parsing
-            output = check_output(self._sensors_bin).decode("utf-8")
-            for (name, sensor) in self._sensors.items():
-                m = re.search(sensor[1], output, re.M)
+            # Fetch the settings
+            sql = """SELECT p.sensor, p.executable, p.regularExpression, p.groups, p.operators, s.name, s.valueType 
+                     FROM parsers p 
+                     INNER JOIN sensors s 
+                     ON p.sensor = s.id"""
+            cursor.execute(sql)
+        except Exception, e:
+            print("Error: %s" % e)
+
+        # Fetch all rows
+        for row in cursor.fetchall():
+            try:
+                # Capture the output from executable
+                output = check_output(row['executable']).decode("utf-8")
+                m = re.search(row['regularExpression'], output, re.M | re.S)
                 if m != None:
-                    con.query("INSERT INTO sensor_log(sensor, value) VALUES("+str(sensor[0])+", "+str(m.group(1))+");")
+                    value = None
+                    if row['groups'] > 1:
+                        ops = re.findall(r'\d+|[\./\+-]', row['operators'])
+                        value = float(m.group(int(ops[0])))
+                        i = 1
+                        while i < len(ops):
+                            if ops[i] == "+":
+                                value += float(m.group(int(ops[i+1])))
+                            elif ops[i] == "-":
+                                value -= float(m.group(int(ops[i+1])))
+                            elif ops[i] == ".":
+                                value += str(m.group(int(ops[i+1])))
+                            elif ops[i] == "*":
+                                value *= float(m.group(int(ops[i+1])))
+                            elif ops[i] == "/":
+                                value /= float(m.group(int(ops[i+1])))
 
-            output = check_output(self._mem_bin).decode("utf-8")
-            for (name, mem) in self._mem.items():
-                m = re.search(mem[1], output, re.M | re.S)
-                if m != None:
-                    usage = float(m.group(2))/float(m.group(1))
-                    con.query("INSERT INTO sensor_log(sensor, value) VALUES("+str(mem[0])+", "+str(usage)+");")
+                            i += 2
+                    else:
+                        value = float(m.group(1))
 
-            output = check_output(self._cpu_bin).decode("utf-8")
-            for (name, cpu) in self._cpu.items():
-                m = re.search(cpu[1], output, re.M)
-                if m != None:
-                    con.query("INSERT INTO sensor_log(sensor, value) VALUES("+str(cpu[0])+", "+str(m.group(1))+");")
+                    t = None
+                    if row['valueType'] == "float":
+                        t = "f"
+                    elif row['valueType'] == "int":
+                        t = "i"
+                    else:
+                        t = "s"
+                    sql = "INSERT INTO sensor_log(sensor, %svalue) VALUES ('%d', '%s');" % (t.upper(), row['sensor'], value)
+                    cursor.execute(sql)
+                    con.commit()
 
-        except _mysql.Error, e:
-            print("MySQL error: %s" % (e.args[1]))
+            except Exception, e:
+                print("Error: %s" % e)
 
         # finally:
         #     if con:
         #         con.close()
-
 
 
 # Main block
